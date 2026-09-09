@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="220" viewBox="0 0 760 220" role="img" aria-label="Synthetic effective-date boundary timeline">
+<rect width="760" height="220" rx="16" fill="#101827"/><text x="32" y="43" fill="#fff" font-family="Arial,sans-serif" font-size="23" font-weight="700">Financial series boundaries</text><text x="32" y="68" fill="#b7c4d8" font-family="Arial,sans-serif" font-size="14">Synthetic reviewed-session example</text>
+<line x1="70" y1="138" x2="690" y2="138" stroke="#718096" stroke-width="3"/><circle cx="100" cy="138" r="9" fill="#64d5b1"/><circle cx="390" cy="138" r="9" fill="#7aa7ff"/><circle cx="660" cy="138" r="9" fill="#64d5b1"/>
+<text x="59" y="170" fill="#fff" font-family="Arial,sans-serif" font-size="13">prior close</text><text x="338" y="170" fill="#fff" font-family="Arial,sans-serif" font-size="13">in-year evidence</text><text x="613" y="170" fill="#fff" font-family="Arial,sans-serif" font-size="13">ending close</text>
+<text x="58" y="109" fill="#b7c4d8" font-family="Arial,sans-serif" font-size="13">2023-12-29</text><text x="618" y="109" fill="#b7c4d8" font-family="Arial,sans-serif" font-size="13">2024-12-30</text>
+</svg>
