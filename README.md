@@ -24,7 +24,7 @@ result = annual_boundary_return(
     BoundaryPolicy(rule_id="reviewed-exchange", reviewed_sessions_required=True),
     reviewed_baseline_date="2023-12-29", reviewed_ending_date="2024-12-30",
 )
-assert result["return_pct"] == 15.0
+assert result["display_return_pct"] == 15.0
 ```
 
 The package accepts records or a pandas DataFrame. A record normally has
