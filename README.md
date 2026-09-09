@@ -36,9 +36,10 @@ closed query envelope; it never reads a database or contacts a provider.
 
 ## Design
 
-- `build_series` chooses the newest source revision deterministically, applies
-  configured source priority, and returns no series when an equal-priority tie
-  has conflicting values.
+- `build_series` chooses the newest source revision deterministically and applies
+  configured source priority. An unresolved equal-priority tie removes that
+  effective date and records a conflict; the series is unavailable only when no
+  eligible date remains.
 - Source changes must have usable overlap below a configured rejection threshold
   or explicit, application-supplied approval evidence. The evidence remains in
   result metadata.
@@ -48,11 +49,19 @@ closed query envelope; it never reads a database or contacts a provider.
 - Version labels and extra metadata are application-owned. This lets consumers
   retain their own audit vocabulary without coupling this package to it.
 
-The initial release supports Python 3.10–3.12 and pandas 1.5–2.x. It does not
+The initial release supports Python 3.11–3.13 and pandas 2.2–3.x. CI tests
+Python 3.11 and 3.12 against the current compatible pandas release. It does not
 ship a trading calendar, provider adapter, data store, asset registry, market
 data, or a recommendation about which source should win. A consumer must supply
 those decisions and should treat an unavailable result as a signal to review
 evidence, rather than a value to impute.
+
+For source-specific timestamp and provenance rules, provide a narrow
+`DateMappingPolicy.row_mapper` that returns standardized records and/or a
+`provenance_validator` that returns `True` only when the complete candidate
+frame meets the consumer’s evidence rules. Either hook failing makes the whole
+requested series unavailable; they cannot select prices, deduplicate revisions,
+or decide transitions.
 
 ## Development
 

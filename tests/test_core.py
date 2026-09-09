@@ -1,6 +1,6 @@
 import pandas as pd
 
-from financial_series_boundaries import BoundaryPolicy, DateMappingPolicy, SeriesPolicy, SourcePolicy, annual_boundary_return, build_series, evaluate_endpoint
+from financial_series_boundaries import BoundaryPolicy, DateMappingPolicy, SeriesPolicy, SourcePolicy, annual_boundary_return, at_or_above_threshold, build_series, evaluate_endpoint
 
 
 def policy(**kwargs):
@@ -30,6 +30,17 @@ def test_equal_priority_sources_with_different_prices_fail_closed():
     assert result.empty
 
 
+def test_conflicting_date_is_removed_without_discarding_other_dates():
+    rows = [
+        {"date": "2024-01-02", "source": "a", "close": 10},
+        {"date": "2024-01-02", "source": "b", "close": 11},
+        {"date": "2024-01-03", "source": "a", "close": 12},
+    ]
+    result = build_series(rows, SeriesPolicy(source=SourcePolicy(priorities={"a": 1, "b": 1})))
+    assert list(result) == [12]
+    assert result.attrs["dedupe_conflicts"] == [{"effective_date": "2024-01-02", "reason": "unresolved_same_priority_revision"}]
+
+
 def test_transition_requires_overlap_or_explicit_approval():
     rows = [{"date": "2024-01-02", "source": "primary", "close": 10}, {"date": "2024-01-03", "source": "secondary", "close": 11}]
     result = build_series(rows, policy())
@@ -49,6 +60,29 @@ def test_transition_at_threshold_is_unavailable():
     assert result.empty and result.attrs["transition_diagnostics"][0]["status"] == "unavailable_pending_manual_review"
 
 
+def test_transition_threshold_uses_explicit_tolerance():
+    assert at_or_above_threshold(99.9999999995, 100, epsilon=1e-9)
+    assert not at_or_above_threshold(99.999, 100, epsilon=1e-9)
+
+
+def test_adjusted_price_falls_back_per_row_to_close():
+    result = build_series(
+        [
+            {"date": "2024-01-01", "source": "primary", "close": 10, "adjusted": 9},
+            {"date": "2024-01-02", "source": "primary", "close": 11, "adjusted": None},
+        ],
+        policy(adjusted_price_column="adjusted"),
+    )
+    assert list(result) == [9, 11]
+
+
+def test_provenance_validator_and_mapper_fail_closed_as_a_whole_series():
+    validator = lambda frame: frame["stamp"].eq("checked").all()
+    mapped = DateMappingPolicy(row_mapper=lambda frame: frame.rename(columns={"when": "date"}), provenance_validator=validator)
+    result = build_series([{"when": "2024-01-01", "source": "primary", "close": 10, "stamp": "bad"}], policy(date_mapping=mapped))
+    assert result.empty and result.attrs["unavailable_reason"] == "invalid_observation_provenance"
+
+
 def test_utc_timestamp_maps_to_utc_calendar_date_and_bounds_are_closed():
     result = build_series([{"date": "2024-01-02T00:30:00+02:00", "source": "primary", "close": 10}], policy(), effective_start="2024-01-01", effective_end="2024-01-01")
     assert result.index[0].strftime("%Y-%m-%d") == "2024-01-01"
@@ -64,6 +98,17 @@ def test_reviewed_and_exact_boundaries_and_no_implicit_gap_fill():
     assert outcome["endpoint_return_available"] is True
     assert outcome["path_metrics_available"] is False
     assert outcome["interior_gap_days"] > 10
+
+
+def test_annual_result_preserves_series_audit_attrs_and_stable_unavailable_shape():
+    prices = pd.Series([100, 110], index=pd.to_datetime(["2023-12-29", "2024-12-30"]))
+    prices.attrs.update({"source_policy_label": "consumer-audit-v1", "effective_start": "old"})
+    policy = BoundaryPolicy(rule_id="reviewed", metadata={"methodology_version": "consumer-v1"})
+    outcome = annual_boundary_return(prices, 2024, policy, reviewed_baseline_date="2023-12-29", reviewed_ending_date="2024-12-30")
+    assert outcome["path_prices"].attrs["source_policy_label"] == "consumer-audit-v1"
+    assert outcome["path_prices"].attrs["effective_start"] == "2023-12-29"
+    unavailable = annual_boundary_return(pd.Series(dtype="float64"), 2024, policy)
+    assert {"baseline_date", "ending_date", "baseline_price", "ending_price", "interior_gap_days", "path_prices"}.issubset(unavailable)
 
 
 def test_unknown_calendar_requires_explicit_policy_evidence():

@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 import math
 from numbers import Real
-from typing import Any, Iterable, Mapping, Optional
+from typing import Any, Callable, Iterable, Mapping, Optional
 
 import pandas as pd
 
@@ -20,6 +20,7 @@ class SourcePolicy:
     default_priority: int = 100
     review_threshold_bps: Optional[float] = None
     reject_threshold_bps: Optional[float] = None
+    threshold_epsilon_bps: float = 1e-9
     required_approval_fields: tuple[str, ...] = ()
 
     def priority_for(self, source: Any) -> int:
@@ -37,8 +38,15 @@ class DateMappingPolicy:
     require_stored_effective_date_for: frozenset[str] = frozenset()
     raw_end_cushion_days: Mapping[str, int] = field(default_factory=dict)
     default_raw_end_cushion_days: int = 0
+    row_mapper: Optional[Callable[[pd.DataFrame], pd.DataFrame]] = None
+    provenance_validator: Optional[Callable[[pd.DataFrame], bool]] = None
 
-    def raw_retrieval_bounds(self, effective_start: Optional[str], effective_end: Optional[str], sources: Iterable[str] = ()) -> tuple[Optional[str], Optional[str]]:
+    def raw_retrieval_bounds(
+        self,
+        effective_start: Optional[str],
+        effective_end: Optional[str],
+        sources: Iterable[str] = (),
+    ) -> tuple[Optional[str], Optional[str]]:
         normalized = [str(source or "").strip().lower() for source in sources]
         cushion = max([self.default_raw_end_cushion_days, *(self.raw_end_cushion_days.get(source, self.default_raw_end_cushion_days) for source in normalized)], default=0)
         if not effective_end or cushion == 0:
@@ -91,6 +99,13 @@ def _date_text(value: Any) -> Optional[str]:
 
 def _valid_number(value: Any, positive: bool = True) -> bool:
     return isinstance(value, Real) and not isinstance(value, bool) and math.isfinite(float(value)) and (float(value) > 0 if positive else True)
+
+
+def at_or_above_threshold(value: float, threshold: float, *, epsilon: float = 1e-9) -> bool:
+    """Compare a computed basis-point value with an explicit numerical tolerance."""
+    if epsilon < 0:
+        raise ValueError("epsilon must be non-negative")
+    return value + epsilon >= threshold
 
 
 def evaluate_endpoint(expected_date: str, actual_date: Optional[str], policy: BoundaryPolicy, *, reviewed_session_date: Optional[str] = None) -> EndpointEligibility:
@@ -186,8 +201,8 @@ def _transitions(candidates: pd.DataFrame, retained: pd.DataFrame, policy: Sourc
                 item.update({"status": "unavailable_unusable_overlap", "reason": "zero_overlap_reference"}); available = False
             else:
                 bps, date = max(comparisons, key=lambda pair: (pair[0], pair[1]))
-                item.update({"overlap_date": _date_text(date), "overlap_relative_bps": bps, "overlap_observation_count": len(comparisons), "review_required": policy.review_threshold_bps is not None and bps >= policy.review_threshold_bps})
-                if policy.reject_threshold_bps is not None and bps >= policy.reject_threshold_bps:
+                item.update({"overlap_date": _date_text(date), "overlap_relative_bps": bps, "overlap_observation_count": len(comparisons), "review_required": policy.review_threshold_bps is not None and at_or_above_threshold(bps, policy.review_threshold_bps, epsilon=policy.threshold_epsilon_bps)})
+                if policy.reject_threshold_bps is not None and at_or_above_threshold(bps, policy.reject_threshold_bps, epsilon=policy.threshold_epsilon_bps):
                     item.update({"status": "unavailable_pending_manual_review", "reason": "overlap_difference_at_or_above_rejection_threshold"}); available = False
                 else:
                     item["status"] = "accepted_overlap"
@@ -203,6 +218,13 @@ def build_series(rows: Any, policy: SeriesPolicy, *, effective_start: Optional[s
     database access, provider registry, or implicit date shift is performed.
     """
     frame = rows.copy() if isinstance(rows, pd.DataFrame) else pd.DataFrame(rows)
+    if policy.date_mapping.row_mapper is not None:
+        try:
+            frame = policy.date_mapping.row_mapper(frame.copy())
+        except (KeyError, TypeError, ValueError):
+            return _empty(policy, "row_mapping_failed")
+        if not isinstance(frame, pd.DataFrame):
+            return _empty(policy, "row_mapping_failed")
     if frame.empty or "date" not in frame:
         return _empty(policy, "missing_price_rows")
     if effective_start and effective_end and _date(effective_start) > _date(effective_end):
@@ -214,10 +236,21 @@ def build_series(rows: Any, policy: SeriesPolicy, *, effective_start: Optional[s
     if (required & supplied.isna()).any():
         return _empty(policy, "required_effective_date_missing")
     frame["_effective_date"] = supplied.where(supplied.notna(), raw)
-    price_column = policy.adjusted_price_column if policy.adjusted_price_column and policy.adjusted_price_column in frame else policy.price_column
-    if price_column not in frame:
+    if policy.date_mapping.provenance_validator is not None:
+        try:
+            valid_provenance = bool(policy.date_mapping.provenance_validator(frame.copy()))
+        except (KeyError, TypeError, ValueError):
+            valid_provenance = False
+        if not valid_provenance:
+            return _empty(policy, "invalid_observation_provenance")
+    if policy.price_column not in frame:
         return _empty(policy, "missing_price_column")
-    frame["_price"] = pd.to_numeric(frame[price_column], errors="coerce")
+    close_prices = pd.to_numeric(frame[policy.price_column], errors="coerce")
+    if policy.adjusted_price_column and policy.adjusted_price_column in frame:
+        adjusted_prices = pd.to_numeric(frame[policy.adjusted_price_column], errors="coerce")
+        frame["_price"] = adjusted_prices.where(adjusted_prices.notna(), close_prices)
+    else:
+        frame["_price"] = close_prices
     valid = frame["_price"].map(lambda v: _valid_number(v, policy.require_positive_prices))
     frame = frame[raw.notna() & frame["_effective_date"].notna() & valid].copy()
     if frame.empty:
@@ -226,26 +259,36 @@ def build_series(rows: Any, policy: SeriesPolicy, *, effective_start: Optional[s
     revisions = pd.to_datetime(frame.get("revision_at", pd.Series(pd.NaT, index=frame.index)), errors="coerce", utc=True)
     frame["_revision_at"] = revisions.fillna(pd.Timestamp("1970-01-01", tz="UTC"))
     frame["_revision_id"] = pd.to_numeric(frame.get("revision_id", pd.Series(float("nan"), index=frame.index)), errors="coerce")
-    retained, conflicts = [], []
-    for date, group in frame.groupby("_effective_date", sort=True):
-        chosen, conflict = _select_candidate(group)
-        if conflict or chosen is None:
-            conflicts.append({"effective_date": _date_text(date), "reason": "unresolved_same_priority_revision"})
-        else:
-            retained.append(chosen)
+    retained: list[pd.Series] = []
+    conflicts: list[dict[str, Any]] = []
+    if frame["_effective_date"].is_unique:
+        retained = [row for _, row in frame.sort_values("_effective_date", kind="mergesort").iterrows()]
+    else:
+        for date, group in frame.groupby("_effective_date", sort=True):
+            chosen, conflict = _select_candidate(group)
+            if conflict or chosen is None:
+                conflicts.append({"effective_date": _date_text(date), "reason": "unresolved_same_priority_revision"})
+            else:
+                retained.append(chosen)
     if not retained:
         return _empty(policy, "unresolved_price_candidates", dedupe_conflicts=conflicts)
     kept = pd.DataFrame(retained).sort_values("_effective_date", kind="mergesort")
     if days is not None:
-        if days <= 0: return _empty(policy, "invalid_trailing_days")
-        effective_end = _date_text(kept["_effective_date"].max()); effective_start = _date_text(kept["_effective_date"].max() - timedelta(days=days - 1))
-    if effective_start: kept = kept[kept["_effective_date"] >= _date(effective_start)]
-    if effective_end: kept = kept[kept["_effective_date"] <= _date(effective_end)]
+        if days <= 0:
+            return _empty(policy, "invalid_trailing_days")
+        effective_end = _date_text(kept["_effective_date"].max())
+        effective_start = _date_text(kept["_effective_date"].max() - timedelta(days=days - 1))
+    if effective_start:
+        kept = kept[kept["_effective_date"] >= _date(effective_start)]
+    if effective_end:
+        kept = kept[kept["_effective_date"] <= _date(effective_end)]
     if kept.empty:
         return _empty(policy, "no_effective_rows_in_requested_window", requested_effective_start=effective_start, requested_effective_end=effective_end, dedupe_conflicts=conflicts)
     candidates = frame
-    if effective_start: candidates = candidates[candidates["_effective_date"] >= _date(effective_start)]
-    if effective_end: candidates = candidates[candidates["_effective_date"] <= _date(effective_end)]
+    if effective_start:
+        candidates = candidates[candidates["_effective_date"] >= _date(effective_start)]
+    if effective_end:
+        candidates = candidates[candidates["_effective_date"] <= _date(effective_end)]
     diagnostics, transition_available = _transitions(candidates, kept, policy.source, transition_approvals or {})
     result = pd.Series(kept["_price"].to_numpy(), index=pd.DatetimeIndex(kept["_effective_date"]), dtype="float64").sort_index()
     sources = kept["_source"].value_counts().to_dict()
@@ -258,28 +301,103 @@ def build_series(rows: Any, policy: SeriesPolicy, *, effective_start: Optional[s
 def annual_boundary_return(prices: pd.Series, year: int, policy: BoundaryPolicy, *, reviewed_baseline_date: Optional[str] = None, reviewed_ending_date: Optional[str] = None, expected_sessions: Optional[Iterable[str]] = None, provider_missing_dates: Optional[Iterable[str]] = None) -> dict[str, Any]:
     """Calculate a calendar-year endpoint return, preserving missing data."""
     expected_base, expected_end = f"{year - 1}-12-31", f"{year}-12-31"
-    base = {"year": int(year), "calendar_rule": policy.rule_id, **dict(policy.metadata), "expected_baseline_date": expected_base, "expected_ending_date": expected_end}
+    base = {
+        "year": int(year),
+        "calendar_rule": policy.rule_id,
+        **dict(policy.metadata),
+        "expected_baseline_date": expected_base,
+        "expected_ending_date": expected_end,
+    }
+
     def unavailable(reason: str, **extra: Any) -> dict[str, Any]:
-        return {**base, "return_fraction": None, "return_pct": None, "display_return_pct": None, "endpoint_return_available": False, "path_metrics_available": False, "full_year_coverage": False, "coverage_status": "unavailable", "status": "unavailable", "unavailable_reason": reason, **extra}
-    if prices is None or prices.empty: return unavailable("missing_price_series")
-    series = pd.Series(prices).copy(); series.index = pd.to_datetime(series.index, errors="coerce", utc=True).tz_localize(None).normalize(); series = series[series.index.notna()].sort_index()
-    if series.index.has_duplicates: return unavailable("duplicate_effective_date")
+        stable = {
+            "return_fraction": None,
+            "return_pct": None,
+            "display_return_pct": None,
+            "baseline_date": None,
+            "ending_date": None,
+            "baseline_price": None,
+            "ending_price": None,
+            "in_year_observations": 0,
+            "interior_gap_days": None,
+            "endpoint_return_available": False,
+            "path_metrics_available": False,
+            "full_year_coverage": False,
+            "coverage_status": "unavailable",
+            "status": "unavailable",
+            "unavailable_reason": reason,
+            "baseline_endpoint_status": None,
+            "ending_endpoint_status": None,
+            "path_prices": None,
+        }
+        return {**base, **stable, **extra}
+
+    if prices is None or prices.empty:
+        return unavailable("missing_price_series")
+
+    original_attrs = dict(getattr(prices, "attrs", {}))
+    series = pd.Series(prices).copy()
+    series.index = pd.to_datetime(series.index, errors="coerce", utc=True).tz_localize(None).normalize()
+    series = series[series.index.notna()].sort_index()
+    if series.index.has_duplicates:
+        return unavailable("duplicate_effective_date")
+
     in_year = series[(series.index >= pd.Timestamp(f"{year}-01-01")) & (series.index <= pd.Timestamp(expected_end))]
     prior = series[series.index < pd.Timestamp(f"{year}-01-01")]
-    if prior.empty: return unavailable("missing_prior_boundary", in_year_observations=len(in_year))
-    if in_year.empty: return unavailable("missing_ending_boundary", in_year_observations=0)
-    baseline_ts, ending_ts = prior.index.max(), in_year.index.max(); baseline, ending = prior.loc[baseline_ts], in_year.loc[ending_ts]
-    shared = {"baseline_date": _date_text(baseline_ts), "ending_date": _date_text(ending_ts), "baseline_price": float(baseline), "ending_price": float(ending), "in_year_observations": len(in_year)}
-    if not _valid_number(baseline): return unavailable("invalid_baseline_price", **shared)
-    if not _valid_number(ending): return unavailable("invalid_ending_price", **shared)
+    if prior.empty:
+        return unavailable("missing_prior_boundary", in_year_observations=len(in_year))
+    if in_year.empty:
+        return unavailable("missing_ending_boundary")
+
+    baseline_ts, ending_ts = prior.index.max(), in_year.index.max()
+    baseline, ending = prior.loc[baseline_ts], in_year.loc[ending_ts]
+    shared = {
+        "baseline_date": _date_text(baseline_ts),
+        "ending_date": _date_text(ending_ts),
+        "baseline_price": float(baseline) if _valid_number(baseline, False) else None,
+        "ending_price": float(ending) if _valid_number(ending, False) else None,
+        "in_year_observations": len(in_year),
+    }
+    if not _valid_number(baseline):
+        return unavailable("invalid_baseline_price", **shared)
+    if not _valid_number(ending):
+        return unavailable("invalid_ending_price", **shared)
+
     baseline_endpoint = evaluate_endpoint(expected_base, shared["baseline_date"], policy, reviewed_session_date=reviewed_baseline_date)
     ending_endpoint = evaluate_endpoint(expected_end, shared["ending_date"], policy, reviewed_session_date=reviewed_ending_date)
-    if not baseline_endpoint.available: return unavailable(f"baseline_{baseline_endpoint.status}", **shared)
-    if not ending_endpoint.available: return unavailable(f"ending_{ending_endpoint.status}", **shared)
-    if not all(_valid_number(value) for value in in_year): return unavailable("invalid_in_year_price", **shared)
+    if not baseline_endpoint.available:
+        return unavailable(f"baseline_{baseline_endpoint.status}", **shared, baseline_endpoint_status=baseline_endpoint.status)
+    if not ending_endpoint.available:
+        return unavailable(f"ending_{ending_endpoint.status}", **shared, baseline_endpoint_status=baseline_endpoint.status, ending_endpoint_status=ending_endpoint.status)
+    if not all(_valid_number(value) for value in in_year):
+        return unavailable("invalid_in_year_price", **shared, baseline_endpoint_status=baseline_endpoint.status, ending_endpoint_status=ending_endpoint.status)
+
     path = pd.concat([pd.Series([float(baseline)], index=[baseline_ts]), in_year.astype(float)])
-    gaps = path.index.to_series().diff().dt.days.dropna(); gap = int(gaps.max()) if not gaps.empty else 0
+    path.attrs.update(original_attrs)
+    path.attrs["effective_start"] = _date_text(path.index.min())
+    path.attrs["effective_end"] = _date_text(path.index.max())
+    gaps = path.index.to_series().diff().dt.days.dropna()
+    gap = int(gaps.max()) if not gaps.empty else 0
     path_available = len(in_year) >= policy.min_observations and (policy.max_interior_gap_days is None or gap <= policy.max_interior_gap_days)
-    expected = {_date_text(d) for d in expected_sessions or []}; actual = {_date_text(d) for d in in_year.index}; missing = {_date_text(d) for d in provider_missing_dates or []}; full = bool(expected) and expected.issubset(actual | missing)
+    expected = {_date_text(d) for d in expected_sessions or []}
+    actual = {_date_text(d) for d in in_year.index}
+    missing = {_date_text(d) for d in provider_missing_dates or []}
+    full = bool(expected) and expected.issubset(actual | missing)
     fraction = float(ending) / float(baseline) - 1
-    return {**base, **shared, "return_fraction": fraction, "return_pct": fraction * 100, "display_return_pct": round(fraction * 100, 1), "interior_gap_days": gap, "endpoint_return_available": True, "path_metrics_available": path_available, "full_year_coverage": full, "coverage_status": "full_year_coverage" if full else ("coverage_qualified" if path_available else "endpoint_only"), "status": "available", "unavailable_reason": None, "baseline_endpoint_status": baseline_endpoint.status, "ending_endpoint_status": ending_endpoint.status, "path_prices": path}
+    return {
+        **base,
+        **shared,
+        "return_fraction": fraction,
+        "return_pct": fraction * 100,
+        "display_return_pct": round(fraction * 100, 1),
+        "interior_gap_days": gap,
+        "endpoint_return_available": True,
+        "path_metrics_available": path_available,
+        "full_year_coverage": full,
+        "coverage_status": "full_year_coverage" if full else ("coverage_qualified" if path_available else "endpoint_only"),
+        "status": "available",
+        "unavailable_reason": None,
+        "baseline_endpoint_status": baseline_endpoint.status,
+        "ending_endpoint_status": ending_endpoint.status,
+        "path_prices": path,
+    }
