@@ -5,7 +5,7 @@ annual return boundaries. It is for pipelines that need missing observations,
 source switches, revisions, and exchange-calendar evidence to remain visible
 instead of being silently repaired.
 
-![Synthetic boundary timeline](docs/assets/synthetic-boundary-timeline.svg)
+![Synthetic boundary timeline](https://raw.githubusercontent.com/sidko/financial-series-boundaries/main/docs/assets/synthetic-boundary-timeline.svg)
 
 ```bash
 pip install financial-series-boundaries
@@ -66,7 +66,7 @@ or decide transitions.
 ## Development
 
 ```bash
-python -m pip install -e '.[test]'
+python -m pip install -e '.[dev]'
 python -m pytest
 python examples/synthetic_annual_return.py
 python -m build
@@ -95,5 +95,6 @@ Apache-2.0 covers this code and does not grant rights to Gale Finance’s logos 
 visual identity. Maintenance is best effort; the latest release is supported
 unless its release notes say otherwise.
 
-See [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), and
-[AGENT_INTEGRATION.md](AGENT_INTEGRATION.md).
+See [CONTRIBUTING.md](https://github.com/sidko/financial-series-boundaries/blob/main/CONTRIBUTING.md),
+[SECURITY.md](https://github.com/sidko/financial-series-boundaries/blob/main/SECURITY.md), and
+[AGENT_INTEGRATION.md](https://github.com/sidko/financial-series-boundaries/blob/main/AGENT_INTEGRATION.md).

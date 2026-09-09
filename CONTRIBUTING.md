@@ -6,7 +6,7 @@ contribution, you confirm that you have the right to submit it under Apache-2.0.
 Use Python 3.10–3.12 and run:
 
 ```bash
-python -m pip install -e '.[test]'
+python -m pip install -e '.[dev]'
 python -m pytest
 python examples/synthetic_annual_return.py
 ```
