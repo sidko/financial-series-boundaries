@@ -285,8 +285,11 @@ def build_series(rows: Any, policy: SeriesPolicy, *, effective_start: Optional[s
         if not valid_provenance:
             return _empty(policy, "invalid_observation_provenance")
     if policy.price_column not in frame:
-        return _empty(policy, "missing_price_column")
-    close_prices = pd.to_numeric(frame[policy.price_column], errors="coerce")
+        if not policy.adjusted_price_column or policy.adjusted_price_column not in frame:
+            return _empty(policy, "missing_price_column")
+        close_prices = pd.Series(float("nan"), index=frame.index)
+    else:
+        close_prices = pd.to_numeric(frame[policy.price_column], errors="coerce")
     if policy.adjusted_price_column and policy.adjusted_price_column in frame:
         adjusted_prices = pd.to_numeric(frame[policy.adjusted_price_column], errors="coerce")
         frame["_price"] = adjusted_prices.where(adjusted_prices.notna(), close_prices)

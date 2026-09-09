@@ -129,6 +129,14 @@ def test_adjusted_price_falls_back_per_row_to_close():
     assert list(result) == [9, 11]
 
 
+def test_adjusted_price_can_be_the_only_price_field():
+    result = build_series(
+        [{"date": "2024-01-01", "source": "primary", "adjusted": 9}],
+        policy(adjusted_price_column="adjusted"),
+    )
+    assert list(result) == [9]
+
+
 def test_provenance_validator_and_mapper_fail_closed_as_a_whole_series():
     validator = lambda frame: frame["stamp"].eq("checked").all()
     mapped = DateMappingPolicy(row_mapper=lambda frame: frame.rename(columns={"when": "date"}), provenance_validator=validator)
