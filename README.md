@@ -86,10 +86,10 @@ remain private. Until Gale’s cutover is complete, this repository describes th
 package as “extracted from Gale”; it does not claim that Gale already uses the
 published package.
 
-Early commits reconstruct milestones developed in the private Gale Finance
-monorepo. Author dates reflect the original work; public content and hashes were
-rewritten to exclude private details. Some early development used Claude as a
-coding assistant; Sid Kalla selected, reviewed and maintains this code.
+The public history begins with the 2026 extraction work. The private source
+mapping is retained outside this repository because it names Gale-only paths
+and operational context. Some early development used Claude as a coding
+assistant; Sid Kalla selected, reviewed and maintains this code.
 
 Apache-2.0 covers this code and does not grant rights to Gale Finance’s logos or
 visual identity. Maintenance is best effort; the latest release is supported
