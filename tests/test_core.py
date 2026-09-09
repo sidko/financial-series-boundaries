@@ -150,6 +150,39 @@ def test_utc_timestamp_maps_to_utc_calendar_date_and_bounds_are_closed():
     assert DateMappingPolicy(raw_end_cushion_days={"daily": 1}).raw_retrieval_bounds("2024-01-01", "2024-01-31", ["daily"]) == ("2024-01-01", "2024-02-01")
 
 
+def test_malformed_effective_bounds_fail_closed_before_filtering():
+    rows = [{"date": "2024-01-01", "source": "primary", "close": 10}]
+    for start, end in (("not-a-date", None), (None, "not-a-date"), ("not-a-date", "also-not-a-date"), (["2024-01-01"], None)):
+        result = build_series(rows, policy(), effective_start=start, effective_end=end)
+        assert result.empty
+        assert result.attrs["unavailable_reason"] == "invalid_effective_range"
+
+
+def test_reversed_valid_effective_bounds_keep_their_distinct_reason():
+    result = build_series(
+        [{"date": "2024-01-01", "source": "primary", "close": 10}],
+        policy(),
+        effective_start="2024-01-02",
+        effective_end="2024-01-01",
+    )
+    assert result.empty
+    assert result.attrs["unavailable_reason"] == "reversed_effective_range"
+
+
+def test_valid_effective_bounds_are_parsed_once_and_filter_closed():
+    result = build_series(
+        [
+            {"date": "2024-01-01", "source": "primary", "close": 10},
+            {"date": "2024-01-02", "source": "primary", "close": 11},
+            {"date": "2024-01-03", "source": "primary", "close": 12},
+        ],
+        policy(),
+        effective_start="2024-01-02T12:00:00Z",
+        effective_end="2024-01-02T12:00:00Z",
+    )
+    assert list(result) == [11]
+
+
 def test_reviewed_and_exact_boundaries_and_no_implicit_gap_fill():
     reviewed = BoundaryPolicy(rule_id="reviewed", reviewed_sessions_required=True, min_observations=2, max_interior_gap_days=10)
     assert evaluate_endpoint("2024-12-31", "2024-12-30", reviewed, reviewed_session_date="2024-12-30").available

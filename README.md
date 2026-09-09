@@ -40,6 +40,9 @@ closed query envelope; it never reads a database or contacts a provider.
   configured source priority. An unresolved equal-priority tie removes that
   effective date and records a conflict; the series is unavailable only when no
   eligible date remains.
+- Supplied effective-date bounds are validated before filtering. Malformed
+  bounds return `invalid_effective_range`, while valid but reversed bounds
+  return `reversed_effective_range`.
 - Source changes must have usable overlap below a configured rejection threshold
   or explicit, application-supplied approval evidence. The evidence remains in
   result metadata.

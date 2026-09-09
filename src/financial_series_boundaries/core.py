@@ -87,10 +87,18 @@ class EndpointEligibility:
 
 
 def _date(value: Any) -> Optional[pd.Timestamp]:
-    parsed = pd.to_datetime(value, errors="coerce", utc=True)
+    try:
+        parsed = pd.to_datetime(value, errors="coerce", utc=True)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if isinstance(parsed, (pd.Series, pd.Index)):
+        return None
     if pd.isna(parsed):
         return None
-    return pd.Timestamp(parsed).tz_localize(None).normalize()
+    try:
+        return pd.Timestamp(parsed).tz_localize(None).normalize()
+    except (TypeError, ValueError, OverflowError):
+        return None
 
 
 def _date_text(value: Any) -> Optional[str]:
@@ -268,7 +276,11 @@ def build_series(rows: Any, policy: SeriesPolicy, *, effective_start: Optional[s
             return _empty(policy, "row_mapping_failed")
     if frame.empty or "date" not in frame:
         return _empty(policy, "missing_price_rows")
-    if effective_start and effective_end and _date(effective_start) > _date(effective_end):
+    requested_start = _date(effective_start) if effective_start is not None else None
+    requested_end = _date(effective_end) if effective_end is not None else None
+    if (effective_start is not None and requested_start is None) or (effective_end is not None and requested_end is None):
+        return _empty(policy, "invalid_effective_range")
+    if requested_start is not None and requested_end is not None and requested_start > requested_end:
         return _empty(policy, "reversed_effective_range")
     frame["_source"] = frame.get("source", pd.Series("", index=frame.index)).fillna("").astype(str).str.strip().str.lower()
     raw = pd.to_datetime(frame["date"], errors="coerce", utc=True).dt.tz_localize(None).dt.normalize()
@@ -322,17 +334,19 @@ def build_series(rows: Any, policy: SeriesPolicy, *, effective_start: Optional[s
             return _empty(policy, "invalid_trailing_days")
         effective_end = _date_text(kept["_effective_date"].max())
         effective_start = _date_text(kept["_effective_date"].max() - timedelta(days=days - 1))
-    if effective_start:
-        kept = kept[kept["_effective_date"] >= _date(effective_start)]
-    if effective_end:
-        kept = kept[kept["_effective_date"] <= _date(effective_end)]
+        requested_start = _date(effective_start)
+        requested_end = _date(effective_end)
+    if requested_start is not None:
+        kept = kept[kept["_effective_date"] >= requested_start]
+    if requested_end is not None:
+        kept = kept[kept["_effective_date"] <= requested_end]
     if kept.empty:
         return _empty(policy, "no_effective_rows_in_requested_window", requested_effective_start=effective_start, requested_effective_end=effective_end, dedupe_conflicts=conflicts)
     candidates = frame
-    if effective_start:
-        candidates = candidates[candidates["_effective_date"] >= _date(effective_start)]
-    if effective_end:
-        candidates = candidates[candidates["_effective_date"] <= _date(effective_end)]
+    if requested_start is not None:
+        candidates = candidates[candidates["_effective_date"] >= requested_start]
+    if requested_end is not None:
+        candidates = candidates[candidates["_effective_date"] <= requested_end]
     diagnostics, transition_available = _transitions(candidates, kept, policy.source, transition_approvals or {})
     result = pd.Series(kept["_price"].to_numpy(), index=pd.DatetimeIndex(kept["_effective_date"]), dtype="float64").sort_index()
     sources = kept["_source"].value_counts().to_dict()
