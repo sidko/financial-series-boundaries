@@ -49,6 +49,59 @@ def test_transition_requires_overlap_or_explicit_approval():
     assert list(result) == [10, 11]
 
 
+def test_transition_exception_can_allow_a_narrow_synthetic_policy_case():
+    observed = []
+
+    def exception(context):
+        observed.append(context)
+        if context["previous_source"] == "primary" and context["retained_source"] == "secondary":
+            return {"review": "synthetic-reviewed-policy"}
+        return None
+
+    rows = [{"date": "2024-01-02", "source": "primary", "close": 10}, {"date": "2024-01-03", "source": "secondary", "close": 11}]
+    result = build_series(rows, SeriesPolicy(source=SourcePolicy(
+        priorities={"primary": 1, "secondary": 2},
+        reject_threshold_bps=100,
+        required_approval_fields=("review",),
+        transition_exception=exception,
+    )))
+    assert list(result) == [10, 11]
+    diagnostic = result.attrs["transition_diagnostics"][0]
+    assert diagnostic["status"] == "accepted_policy_exception"
+    assert diagnostic["policy_exception"] == {"review": "synthetic-reviewed-policy"}
+    assert observed[0]["previous_candidate"]["source"] == "primary"
+    assert observed[0]["retained_candidate"]["source"] == "secondary"
+
+
+def test_transition_exception_does_not_allow_an_unmatched_transition():
+    result = build_series(
+        [{"date": "2024-01-02", "source": "primary", "close": 10}, {"date": "2024-01-03", "source": "secondary", "close": 11}],
+        SeriesPolicy(source=SourcePolicy(
+            priorities={"primary": 1, "secondary": 2},
+            reject_threshold_bps=100,
+            required_approval_fields=("review",),
+            transition_exception=lambda _context: None,
+        )),
+    )
+    assert result.empty
+    assert result.attrs["transition_diagnostics"][0]["status"] == "unavailable_pending_external_reconciliation"
+
+
+def test_transition_diagnostics_include_selected_overlap_difference():
+    rows = [
+        {"date": "2024-01-01", "source": "primary", "close": 100},
+        {"date": "2024-01-02", "source": "primary", "close": 100},
+        {"date": "2024-01-02", "source": "secondary", "close": 100.5},
+        {"date": "2024-01-03", "source": "secondary", "close": 101},
+    ]
+    result = build_series(rows, policy())
+    diagnostic = result.attrs["transition_diagnostics"][0]
+    assert diagnostic["overlap_date"] == "2024-01-02"
+    assert diagnostic["overlap_absolute_difference"] == 0.5
+    assert diagnostic["overlap_relative_bps"] == 50
+    assert diagnostic["overlap_observation_count"] == 1
+
+
 def test_transition_at_threshold_is_unavailable():
     rows = [
         {"date": "2024-01-01", "source": "primary", "close": 100},

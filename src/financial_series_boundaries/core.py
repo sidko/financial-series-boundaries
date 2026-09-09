@@ -22,6 +22,7 @@ class SourcePolicy:
     reject_threshold_bps: Optional[float] = None
     threshold_epsilon_bps: float = 1e-9
     required_approval_fields: tuple[str, ...] = ()
+    transition_exception: Optional[Callable[[Mapping[str, Any]], Optional[Mapping[str, Any]]]] = None
 
     def priority_for(self, source: Any) -> int:
         return self.priorities.get(str(source or "").strip().lower(), self.default_priority)
@@ -175,6 +176,15 @@ def _source_values(candidates: pd.DataFrame, source: str) -> pd.Series:
     return pd.Series(values, dtype="float64")
 
 
+def _row_context(row: pd.Series) -> dict[str, Any]:
+    """Return a callback-safe snapshot of one validated selected candidate."""
+    return {
+        key: value
+        for key, value in row.to_dict().items()
+        if not key.startswith("_")
+    }
+
+
 def _transitions(candidates: pd.DataFrame, retained: pd.DataFrame, policy: SourcePolicy, approvals: Mapping[str, Mapping[str, Any]]) -> tuple[list[dict[str, Any]], bool]:
     if retained.empty or retained["_source"].nunique() < 2:
         return [], True
@@ -188,24 +198,55 @@ def _transitions(candidates: pd.DataFrame, retained: pd.DataFrame, policy: Sourc
         old_values, new_values = _source_values(candidates, old), _source_values(candidates, new)
         overlap = old_values.index.intersection(new_values.index)
         item: dict[str, Any] = {"previous_source": old, "retained_source": new, "switch_date": _date_text(switched["_effective_date"]), "previous_effective_date": _date_text(previous["_effective_date"]), "previous_price": float(previous["_price"]), "switch_price": float(switched["_price"]), "adjacent_return_jump": float(switched["_price"]) / float(previous["_price"]) - 1}
+        overlap_absolute_difference: Optional[float] = None
+        overlap_relative_bps: Optional[float] = None
+        overlap_date: Optional[str] = None
+        overlap_observation_count = 0
         if overlap.empty:
             evidence = approvals.get(f"{old}->{new}", {})
             if policy.required_approval_fields and all(str(evidence.get(key) or "").strip() for key in policy.required_approval_fields):
                 item.update({"status": "approved_external_reconciliation", "approval": {key: evidence[key] for key in policy.required_approval_fields}})
             else:
                 item.update({"status": "unavailable_pending_external_reconciliation", "reason": "no_overlap_requires_approval"})
-                available = False
         else:
             comparisons = [(abs(float(old_values.loc[d]) - float(new_values.loc[d])) / abs(float(old_values.loc[d])) * 10000, d) for d in overlap if float(old_values.loc[d]) != 0]
             if not comparisons:
-                item.update({"status": "unavailable_unusable_overlap", "reason": "zero_overlap_reference"}); available = False
+                item.update({"status": "unavailable_unusable_overlap", "reason": "zero_overlap_reference"})
             else:
                 bps, date = max(comparisons, key=lambda pair: (pair[0], pair[1]))
-                item.update({"overlap_date": _date_text(date), "overlap_relative_bps": bps, "overlap_observation_count": len(comparisons), "review_required": policy.review_threshold_bps is not None and at_or_above_threshold(bps, policy.review_threshold_bps, epsilon=policy.threshold_epsilon_bps)})
+                overlap_absolute_difference = abs(float(old_values.loc[date]) - float(new_values.loc[date]))
+                overlap_relative_bps = bps
+                overlap_date = _date_text(date)
+                overlap_observation_count = len(comparisons)
+                item.update({"overlap_date": overlap_date, "overlap_absolute_difference": overlap_absolute_difference, "overlap_relative_bps": overlap_relative_bps, "overlap_observation_count": overlap_observation_count, "review_required": policy.review_threshold_bps is not None and at_or_above_threshold(bps, policy.review_threshold_bps, epsilon=policy.threshold_epsilon_bps)})
                 if policy.reject_threshold_bps is not None and at_or_above_threshold(bps, policy.reject_threshold_bps, epsilon=policy.threshold_epsilon_bps):
-                    item.update({"status": "unavailable_pending_manual_review", "reason": "overlap_difference_at_or_above_rejection_threshold"}); available = False
+                    item.update({"status": "unavailable_pending_manual_review", "reason": "overlap_difference_at_or_above_rejection_threshold"})
                 else:
                     item["status"] = "accepted_overlap"
+        exception: Optional[Mapping[str, Any]] = None
+        if policy.transition_exception is not None:
+            context = {
+                "previous_source": old,
+                "retained_source": new,
+                "switch_date": item["switch_date"],
+                "previous_effective_date": item["previous_effective_date"],
+                "previous_candidate": _row_context(previous),
+                "retained_candidate": _row_context(switched),
+                "overlap_date": overlap_date,
+                "overlap_absolute_difference": overlap_absolute_difference,
+                "overlap_relative_bps": overlap_relative_bps,
+                "overlap_observation_count": overlap_observation_count,
+            }
+            try:
+                candidate_exception = policy.transition_exception(context)
+            except (KeyError, TypeError, ValueError):
+                candidate_exception = None
+            if isinstance(candidate_exception, Mapping):
+                exception = dict(candidate_exception)
+        if exception is not None:
+            item.update({"status": "accepted_policy_exception", "policy_exception": dict(exception)})
+        elif item["status"].startswith("unavailable_"):
+            available = False
         diagnostics.append(item)
     return diagnostics, available
 
