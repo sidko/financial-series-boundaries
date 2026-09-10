@@ -7,15 +7,14 @@ instead of being silently repaired.
 
 Gale Finance uses `financial-series-boundaries@0.1.0` for the date-boundary and
 availability decisions behind its asset comparisons, including its public
-[BTC vs SPY scorecard](https://www.gale.finance/compare/btc-vs-spy-2021/).
+[BTC vs SPY scorecard](https://www.gale.finance/scorecard/btc-vs-spy/).
 Gale owns provider integrations, asset and calendar registries, production data,
 and transition policy.
 
 ![Synthetic boundary timeline](https://raw.githubusercontent.com/sidko/financial-series-boundaries/main/docs/assets/synthetic-boundary-timeline.svg)
 
-The timeline is a reproducible financial fixture illustrating the same category
-of endpoint evidence the library makes explicit; it is not production market
-data or a chart from Gale.
+The timeline is a reproducible financial fixture illustrating the endpoint
+evidence the library makes explicit.
 
 ```bash
 pip install financial-series-boundaries
