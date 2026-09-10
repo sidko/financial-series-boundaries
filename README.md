@@ -5,7 +5,17 @@ annual return boundaries. It is for pipelines that need missing observations,
 source switches, revisions, and exchange-calendar evidence to remain visible
 instead of being silently repaired.
 
+Gale Finance uses `financial-series-boundaries@0.1.0` for the date-boundary and
+availability decisions behind its asset comparisons, including its public
+[BTC vs SPY scorecard](https://www.gale.finance/compare/btc-vs-spy-2021/).
+Gale owns provider integrations, asset and calendar registries, production data,
+and transition policy.
+
 ![Synthetic boundary timeline](https://raw.githubusercontent.com/sidko/financial-series-boundaries/main/docs/assets/synthetic-boundary-timeline.svg)
+
+The timeline is a reproducible financial fixture illustrating the same category
+of endpoint evidence the library makes explicit; it is not production market
+data or a chart from Gale.
 
 ```bash
 pip install financial-series-boundaries
@@ -82,11 +92,8 @@ running the example.
 
 ## Origin and history
 
-Gale Finance uses `financial-series-boundaries@0.1.0` for the date-boundary and
-availability decisions behind its asset comparisons, including
-[BTC vs SPY](https://www.gale.finance/compare/btc-vs-spy-2021/). Gale-specific
-provider integrations, asset and calendar registries, production data,
-transition policy, and storage remain private.
+Gale-specific provider integrations, asset and calendar registries, production
+data, transition policy, and storage remain private.
 
 The public history begins with the 2026 extraction work. The private source
 mapping is retained outside this repository because it names Gale-only paths
