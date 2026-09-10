@@ -82,12 +82,11 @@ running the example.
 
 ## Origin and history
 
-This package was extracted from financial data-pipeline work for
-[Gale Finance](https://gale.finance/). Gale-specific provider integrations,
-asset and calendar registries, production data, transition policy, and storage
-remain private. Until Gale’s cutover is complete, this repository describes the
-package as “extracted from Gale”; it does not claim that Gale already uses the
-published package.
+Gale Finance uses `financial-series-boundaries@0.1.0` for the date-boundary and
+availability decisions behind its asset comparisons, including
+[BTC vs SPY](https://www.gale.finance/compare/btc-vs-spy-2021/). Gale-specific
+provider integrations, asset and calendar registries, production data,
+transition policy, and storage remain private.
 
 The public history begins with the 2026 extraction work. The private source
 mapping is retained outside this repository because it names Gale-only paths
